@@ -3,13 +3,12 @@
     android:id="@+id/camera_frame"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:keepScreenOn="true"
-    android:background="#FF0000">
+    android:keepScreenOn="true">
 
     <SurfaceView
         android:id="@+id/camera_surface_view"
-        android:layout_width="640dp"
-        android:layout_height="480dp"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
         android:layout_centerInParent="true" />
         
     <Button

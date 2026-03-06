@@ -56,6 +56,9 @@ class MainActivity : AppCompatActivity() {
     private var mCameraUvcStrategy: CameraUvcStrategy? = null
     private var mUVCCamera: UVCCamera? = null
     
+    private var mVideoWidth = 0
+    private var mVideoHeight = 0
+    
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { permissions ->
@@ -85,6 +88,18 @@ class MainActivity : AppCompatActivity() {
         Log.e(TAG, "onStop called")
     }
 
+    override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
+        super.onConfigurationChanged(newConfig)
+        Log.e(TAG, "onConfigurationChanged")
+        
+        if (mVideoWidth > 0 && mVideoHeight > 0) {
+            val surfaceView = findViewById<android.view.SurfaceView>(R.id.camera_surface_view)
+            surfaceView?.post {
+                updateSurfaceViewAspectRatio(mVideoWidth, mVideoHeight)
+            }
+        }
+    }
+
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
         Log.e(TAG, "onWindowFocusChanged: $hasFocus")
@@ -99,10 +114,6 @@ class MainActivity : AppCompatActivity() {
             surfaceView.visibility = android.view.View.VISIBLE
         }
         
-        val params = surfaceView.layoutParams
-        params.width = 640
-        params.height = 480
-        surfaceView.layoutParams = params
         surfaceView.requestLayout()
     }
 
@@ -366,14 +377,53 @@ class MainActivity : AppCompatActivity() {
                  }
             }
             
-            // 640x480 is what user suggested
-            try {
-                mUVCCamera?.setPreviewSize(640, 480, UVCCamera.FRAME_FORMAT_YUYV)
-            } catch (e: IllegalArgumentException) {
+            // Try higher resolutions first for better quality
+            // Note: FRAME_FORMAT_MJPEG is preferred for higher resolutions (bandwidth)
+            // But we try YUYV too if MJPEG is not supported
+            val resolutions = listOf(
+                Triple(1920, 1080, UVCCamera.FRAME_FORMAT_MJPEG),
+                Triple(1920, 1080, UVCCamera.FRAME_FORMAT_YUYV),
+                Triple(1280, 720, UVCCamera.FRAME_FORMAT_MJPEG),
+                Triple(1280, 720, UVCCamera.FRAME_FORMAT_YUYV),
+                Triple(640, 480, UVCCamera.FRAME_FORMAT_MJPEG),
+                Triple(640, 480, UVCCamera.FRAME_FORMAT_YUYV)
+            )
+
+            var success = false
+            for ((width, height, format) in resolutions) {
                 try {
-                    mUVCCamera?.setPreviewSize(1280, 720, UVCCamera.FRAME_FORMAT_YUYV)
-                } catch (e2: IllegalArgumentException) {
+                    Log.e(TAG, "Trying resolution: ${width}x${height} format:$format")
+                    mUVCCamera?.setPreviewSize(width, height, format)
+                    success = true
+                    Log.e(TAG, "Resolution accepted: ${width}x${height} format:$format")
+                    
+                    mVideoWidth = width
+                    mVideoHeight = height
+                    
+                    // Adjust SurfaceView aspect ratio
+                    runOnUiThread {
+                        updateSurfaceViewAspectRatio(width, height)
+                    }
+                    
+                    break
+                } catch (e: IllegalArgumentException) {
+                    Log.e(TAG, "Resolution failed: ${width}x${height} format:$format")
+                    continue
+                }
+            }
+
+            if (!success) {
+                // Last resort fallback
+                try {
+                    Log.e(TAG, "Falling back to default 640x480 YUYV")
                     mUVCCamera?.setPreviewSize(640, 480, UVCCamera.FRAME_FORMAT_YUYV)
+                    mVideoWidth = 640
+                    mVideoHeight = 480
+                    runOnUiThread {
+                        updateSurfaceViewAspectRatio(640, 480)
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "All resolutions failed", e)
                 }
             }
             
@@ -391,6 +441,36 @@ class MainActivity : AppCompatActivity() {
             }
             release64BitCamera()
         }
+    }
+
+    private fun updateSurfaceViewAspectRatio(videoWidth: Int, videoHeight: Int) {
+        val surfaceView = findViewById<android.view.SurfaceView>(R.id.camera_surface_view) ?: return
+        val parent = surfaceView.parent as? android.view.View ?: return
+        
+        val screenWidth = parent.width
+        val screenHeight = parent.height
+        
+        if (screenWidth == 0 || screenHeight == 0) return
+        
+        val videoRatio = videoWidth.toFloat() / videoHeight
+        val screenRatio = screenWidth.toFloat() / screenHeight
+        
+        val params = surfaceView.layoutParams
+        
+        if (videoRatio > screenRatio) {
+            // Video is wider than screen (e.g. 16:9 video on 9:16 screen)
+            // Fit to width
+            params.width = screenWidth
+            params.height = (screenWidth / videoRatio).toInt()
+        } else {
+            // Video is taller than screen
+            // Fit to height
+            params.height = screenHeight
+            params.width = (screenHeight * videoRatio).toInt()
+        }
+        
+        surfaceView.layoutParams = params
+        Log.e(TAG, "Adjusted SurfaceView to ${params.width}x${params.height} for video ${videoWidth}x${videoHeight}")
     }
 
     override fun onDestroy() {
