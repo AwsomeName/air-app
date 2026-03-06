@@ -10,6 +10,16 @@
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         android:layout_centerInParent="true" />
+
+    <ImageView
+        android:id="@+id/recording_indicator"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_alignParentTop="true"
+        android:layout_centerHorizontal="true"
+        android:layout_marginTop="32dp"
+        android:src="@drawable/ic_recording_dot"
+        android:visibility="gone" />
         
     <LinearLayout
         android:layout_width="match_parent"

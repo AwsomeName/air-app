@@ -77,6 +77,24 @@ class MainActivity : AppCompatActivity() {
     private var mCurrentVideoFile: File? = null
     private val recordingHandler = Handler(Looper.getMainLooper())
     private var recordingRunnable: Runnable? = null
+
+    private var mRecordingIndicator: android.view.View? = null
+    private val mBlinkingHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private val mBlinkingRunnable = object : Runnable {
+        override fun run() {
+            val indicator = mRecordingIndicator ?: return
+            if (!isRecording) {
+                indicator.visibility = android.view.View.GONE
+                return
+            }
+            if (indicator.visibility == android.view.View.VISIBLE) {
+                indicator.visibility = android.view.View.INVISIBLE
+            } else {
+                indicator.visibility = android.view.View.VISIBLE
+            }
+            mBlinkingHandler.postDelayed(this, 500)
+        }
+    }
     
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -151,6 +169,8 @@ class MainActivity : AppCompatActivity() {
         // enableEdgeToEdge()
         
         setContentView(R.layout.activity_main)
+        
+        mRecordingIndicator = findViewById(R.id.recording_indicator)
 
         val textureView = findViewById<android.view.TextureView>(R.id.camera_texture_view)
         
@@ -390,12 +410,15 @@ class MainActivity : AppCompatActivity() {
                         Log.e(TAG, "Switched preview to MediaRecorder surface")
 
                         // Start MediaRecorder
-                        mMediaRecorder?.start()
-                        isRecording = true
-                        
-                        runOnUiThread {
-                            Toast.makeText(this, "Recording Started...", Toast.LENGTH_SHORT).show()
-                        }
+                    mMediaRecorder?.start()
+                    isRecording = true
+                    
+                    // Start blinking indicator
+                    runOnUiThread {
+                        mRecordingIndicator?.visibility = android.view.View.VISIBLE
+                        mBlinkingHandler.post(mBlinkingRunnable)
+                        Toast.makeText(this, "Recording Started...", Toast.LENGTH_SHORT).show()
+                    }
                         Log.e(TAG, "MediaRecorder started successfully")
 
                         // Start preview (now feeding recorder)
@@ -431,6 +454,11 @@ class MainActivity : AppCompatActivity() {
 
     private fun stopRecording() {
         if (!isRecording) return
+
+        mBlinkingHandler.removeCallbacksAndMessages(null)
+        runOnUiThread {
+            mRecordingIndicator?.visibility = android.view.View.GONE
+        }
 
         try {
              // Stop preview (which is feeding recorder)
