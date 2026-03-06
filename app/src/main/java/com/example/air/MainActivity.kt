@@ -38,9 +38,9 @@ class MainActivity : AppCompatActivity() {
                     if (intent.getBooleanExtra(android.hardware.usb.UsbManager.EXTRA_PERMISSION_GRANTED, false)) {
                         device?.apply {
                             Log.e(TAG, "Permission granted for device $deviceName")
-                            val surfaceView = findViewById<android.view.SurfaceView>(R.id.camera_surface_view)
-                            if (surfaceView != null) {
-                                open64BitCamera(this, surfaceView)
+                            val textureView = findViewById<android.view.TextureView>(R.id.camera_texture_view)
+                            if (textureView != null) {
+                                open64BitCamera(this, textureView)
                             }
                         }
                     } else {
@@ -58,6 +58,7 @@ class MainActivity : AppCompatActivity() {
     
     private var mVideoWidth = 0
     private var mVideoHeight = 0
+    private var mRotationAngle = 90f // Default rotation
     
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -66,12 +67,12 @@ class MainActivity : AppCompatActivity() {
         val audioGranted = permissions[Manifest.permission.RECORD_AUDIO] ?: false
         if (cameraGranted && audioGranted) {
             // initCameraClient()
-            Log.e(TAG, "Permissions granted, waiting for surfaceCreated")
-            val surfaceView = findViewById<android.view.SurfaceView>(R.id.camera_surface_view)
-            if (surfaceView != null) {
+            Log.e(TAG, "Permissions granted, waiting for surfaceTextureAvailable")
+            val textureView = findViewById<android.view.TextureView>(R.id.camera_texture_view)
+            if (textureView != null) {
                 // Force layout pass just in case
-                surfaceView.requestLayout()
-                surfaceView.invalidate()
+                textureView.requestLayout()
+                textureView.invalidate()
             }
         } else {
             Toast.makeText(this, "Permissions required", Toast.LENGTH_SHORT).show()
@@ -93,9 +94,8 @@ class MainActivity : AppCompatActivity() {
         Log.e(TAG, "onConfigurationChanged")
         
         if (mVideoWidth > 0 && mVideoHeight > 0) {
-            val surfaceView = findViewById<android.view.SurfaceView>(R.id.camera_surface_view)
-            surfaceView?.post {
-                updateSurfaceViewAspectRatio(mVideoWidth, mVideoHeight)
+            findViewById<android.view.TextureView>(R.id.camera_texture_view)?.post {
+                updateTextureViewAspectRatio(mVideoWidth, mVideoHeight)
             }
         }
     }
@@ -109,12 +109,14 @@ class MainActivity : AppCompatActivity() {
         super.onResume()
         Log.e(TAG, "onResume called")
         
-        val surfaceView = findViewById<android.view.SurfaceView>(R.id.camera_surface_view)
-        if (surfaceView.visibility != android.view.View.VISIBLE) {
-            surfaceView.visibility = android.view.View.VISIBLE
+        val textureView = findViewById<android.view.TextureView>(R.id.camera_texture_view)
+        if (textureView.visibility != android.view.View.VISIBLE) {
+            textureView.visibility = android.view.View.VISIBLE
         }
         
-        surfaceView.requestLayout()
+        if (textureView.isAvailable) {
+            // If already available, maybe retry opening camera?
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -132,11 +134,11 @@ class MainActivity : AppCompatActivity() {
         
         setContentView(R.layout.activity_main)
 
-        val surfaceView = findViewById<android.view.SurfaceView>(R.id.camera_surface_view)
+        val textureView = findViewById<android.view.TextureView>(R.id.camera_texture_view)
         
-        surfaceView.holder.addCallback(object : android.view.SurfaceHolder.Callback {
-            override fun surfaceCreated(holder: android.view.SurfaceHolder) {
-                Log.e(TAG, "surfaceCreated")
+        textureView.surfaceTextureListener = object : android.view.TextureView.SurfaceTextureListener {
+            override fun onSurfaceTextureAvailable(surface: android.graphics.SurfaceTexture, width: Int, height: Int) {
+                Log.e(TAG, "onSurfaceTextureAvailable")
                 
                 // Try to use open64BitCamera immediately if device is available
                 val usbManager = this@MainActivity.getSystemService(android.content.Context.USB_SERVICE) as android.hardware.usb.UsbManager
@@ -144,21 +146,26 @@ class MainActivity : AppCompatActivity() {
                 if (deviceList.values.isNotEmpty()) {
                     val device = deviceList.values.first()
                     Log.e(TAG, "Found device: ${device.deviceName}, trying open64BitCamera")
-                    this@MainActivity.open64BitCamera(device, surfaceView)
+                    this@MainActivity.open64BitCamera(device, textureView)
                 } else {
                     Log.e(TAG, "No device found")
                 }
             }
 
-            override fun surfaceChanged(holder: android.view.SurfaceHolder, format: Int, width: Int, height: Int) {
-                Log.e(TAG, "surfaceChanged: $width x $height")
+            override fun onSurfaceTextureSizeChanged(surface: android.graphics.SurfaceTexture, width: Int, height: Int) {
+                Log.e(TAG, "onSurfaceTextureSizeChanged: $width x $height")
             }
 
-            override fun surfaceDestroyed(holder: android.view.SurfaceHolder) {
-                Log.e(TAG, "surfaceDestroyed")
+            override fun onSurfaceTextureDestroyed(surface: android.graphics.SurfaceTexture): Boolean {
+                Log.e(TAG, "onSurfaceTextureDestroyed")
                 release64BitCamera()
+                return true
             }
-        })
+
+            override fun onSurfaceTextureUpdated(surface: android.graphics.SurfaceTexture) {
+                // Log.e(TAG, "onSurfaceTextureUpdated")
+            }
+        }
 
         val retryButton = findViewById<android.widget.Button>(R.id.retry_button)
         retryButton.setOnClickListener {
@@ -171,17 +178,26 @@ class MainActivity : AppCompatActivity() {
                 }
             }
             
-            if (surfaceView != null) {
+            if (textureView != null) {
                 if (deviceList.values.isNotEmpty()) {
                     val device = deviceList.values.first()
-                    open64BitCamera(device, surfaceView)
+                    open64BitCamera(device, textureView)
                 } else {
                     Toast.makeText(this@MainActivity, "No Device Found", Toast.LENGTH_SHORT).show()
                 }
             } else {
-                 Log.e(TAG, "SurfaceView not found")
+                 Log.e(TAG, "TextureView not found")
                  Toast.makeText(this@MainActivity, "View not ready", Toast.LENGTH_SHORT).show()
              }
+        }
+
+        val rotateButton = findViewById<android.widget.Button>(R.id.rotate_button)
+        rotateButton.setOnClickListener {
+            mRotationAngle = (mRotationAngle + 90f) % 360f
+            Log.e(TAG, "Rotating to $mRotationAngle")
+            if (mVideoWidth > 0 && mVideoHeight > 0) {
+                updateTextureViewAspectRatio(mVideoWidth, mVideoHeight)
+            }
         }
 
 
@@ -269,7 +285,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun open64BitCamera(device: UsbDevice, surfaceView: android.view.SurfaceView) {
+    private fun open64BitCamera(device: UsbDevice, textureView: android.view.TextureView) {
         try {
             Log.e(TAG, "Attempting open64BitCamera for ${device.deviceName}")
             
@@ -400,9 +416,9 @@ class MainActivity : AppCompatActivity() {
                     mVideoWidth = width
                     mVideoHeight = height
                     
-                    // Adjust SurfaceView aspect ratio
+                    // Adjust TextureView aspect ratio
                     runOnUiThread {
-                        updateSurfaceViewAspectRatio(width, height)
+                        updateTextureViewAspectRatio(width, height)
                     }
                     
                     break
@@ -420,14 +436,14 @@ class MainActivity : AppCompatActivity() {
                     mVideoWidth = 640
                     mVideoHeight = 480
                     runOnUiThread {
-                        updateSurfaceViewAspectRatio(640, 480)
+                        updateTextureViewAspectRatio(640, 480)
                     }
                 } catch (e: Exception) {
                     Log.e(TAG, "All resolutions failed", e)
                 }
             }
             
-            mUVCCamera?.setPreviewDisplay(surfaceView.holder)
+            mUVCCamera?.setPreviewTexture(textureView.surfaceTexture)
             mUVCCamera?.startPreview()
             runOnUiThread {
                 Toast.makeText(this, "Samsung/64bit Camera Started", Toast.LENGTH_SHORT).show()
@@ -443,34 +459,64 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun updateSurfaceViewAspectRatio(videoWidth: Int, videoHeight: Int) {
-        val surfaceView = findViewById<android.view.SurfaceView>(R.id.camera_surface_view) ?: return
-        val parent = surfaceView.parent as? android.view.View ?: return
+    private fun updateTextureViewAspectRatio(videoWidth: Int, videoHeight: Int) {
+        val textureView = findViewById<android.view.TextureView>(R.id.camera_texture_view) ?: return
+        val parent = textureView.parent as? android.view.View ?: return
         
         val screenWidth = parent.width
         val screenHeight = parent.height
         
         if (screenWidth == 0 || screenHeight == 0) return
         
-        val videoRatio = videoWidth.toFloat() / videoHeight
+        // 1. Rotate the View
+        textureView.rotation = mRotationAngle
+        
+        // 2. Check if the rotation swaps width and height visually (90 or 270 degrees)
+        // Normalize rotation to 0-360 range for check
+        val normalizedRotation = (mRotationAngle % 360 + 360) % 360
+        val isRotated = normalizedRotation == 90f || normalizedRotation == 270f
+        
+        val visualVideoWidth = if (isRotated) videoHeight else videoWidth
+        val visualVideoHeight = if (isRotated) videoWidth else videoHeight
+        
+        val videoRatio = visualVideoWidth.toFloat() / visualVideoHeight
         val screenRatio = screenWidth.toFloat() / screenHeight
         
-        val params = surfaceView.layoutParams
+        var targetVisualWidth = 0
+        var targetVisualHeight = 0
         
+        // 3. Calculate target visual dimensions to fit inside the screen while maintaining aspect ratio
         if (videoRatio > screenRatio) {
-            // Video is wider than screen (e.g. 16:9 video on 9:16 screen)
+            // Video is wider than screen
             // Fit to width
-            params.width = screenWidth
-            params.height = (screenWidth / videoRatio).toInt()
+            targetVisualWidth = screenWidth
+            targetVisualHeight = (screenWidth / videoRatio).toInt()
         } else {
             // Video is taller than screen
             // Fit to height
-            params.height = screenHeight
-            params.width = (screenHeight * videoRatio).toInt()
+            targetVisualHeight = screenHeight
+            targetVisualWidth = (screenHeight * videoRatio).toInt()
         }
         
-        surfaceView.layoutParams = params
-        Log.e(TAG, "Adjusted SurfaceView to ${params.width}x${params.height} for video ${videoWidth}x${videoHeight}")
+        // 4. Map visual dimensions back to View layout params
+        val params = textureView.layoutParams
+        
+        if (isRotated) {
+             // If rotated 90/270:
+             // View Width controls Visual Height
+             // View Height controls Visual Width
+             params.width = targetVisualHeight
+             params.height = targetVisualWidth
+        } else {
+             // If rotated 0/180:
+             // View Width controls Visual Width
+             // View Height controls Visual Height
+             params.width = targetVisualWidth
+             params.height = targetVisualHeight
+        }
+        
+        textureView.layoutParams = params
+        Log.e(TAG, "Adjusted TextureView (Rotated $mRotationAngle): LayoutParams[${params.width}x${params.height}] Visual[${targetVisualWidth}x${targetVisualHeight}] for Video[${videoWidth}x${videoHeight}]")
     }
 
     override fun onDestroy() {
