@@ -19,6 +19,18 @@ import com.serenegiant.usb.UVCCamera
 import android.util.Log
 
 import android.view.WindowManager
+import android.media.MediaRecorder
+import android.os.Environment
+import java.io.File
+import java.io.FileOutputStream
+import android.provider.MediaStore
+import android.content.ContentValues
+import android.os.Handler
+import android.os.Looper
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import android.view.MotionEvent
 
 class MainActivity : AppCompatActivity() {
     private val TAG = "USB_CAMERA_DEBUG"
@@ -59,6 +71,12 @@ class MainActivity : AppCompatActivity() {
     private var mVideoWidth = 0
     private var mVideoHeight = 0
     private var mRotationAngle = 90f // Default rotation
+    
+    private var mMediaRecorder: MediaRecorder? = null
+    private var isRecording = false
+    private var mCurrentVideoFile: File? = null
+    private val recordingHandler = Handler(Looper.getMainLooper())
+    private var recordingRunnable: Runnable? = null
     
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -199,7 +217,8 @@ class MainActivity : AppCompatActivity() {
                 updateTextureViewAspectRatio(mVideoWidth, mVideoHeight)
             }
         }
-
+        
+        setupCaptureButton()
 
         if (allPermissionsGranted()) {
             Log.e(TAG, "Permissions already granted")
@@ -208,6 +227,306 @@ class MainActivity : AppCompatActivity() {
             Log.e(TAG, "Requesting permissions")
             requestPermissions()
         }
+    }
+
+    private fun setupCaptureButton() {
+        val captureButton = findViewById<android.widget.Button>(R.id.capture_button) ?: return
+        
+        recordingRunnable = Runnable {
+            if (!isRecording) {
+                startRecording()
+            }
+        }
+        
+        captureButton.setOnTouchListener { v, event ->
+            when (event.action) {
+                MotionEvent.ACTION_DOWN -> {
+                    // Start timer for long press (recording)
+                    recordingHandler.postDelayed(recordingRunnable!!, 500) // 500ms threshold
+                    v.isPressed = true
+                    true
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    recordingHandler.removeCallbacks(recordingRunnable!!)
+                    v.isPressed = false
+                    
+                    if (isRecording) {
+                        stopRecording()
+                    } else {
+                        // Short press: Take Photo
+                        takePhoto()
+                    }
+                    true
+                }
+                else -> false
+            }
+        }
+    }
+
+    private fun takePhoto() {
+        val textureView = findViewById<android.view.TextureView>(R.id.camera_texture_view)
+        if (textureView == null || !textureView.isAvailable) {
+            Toast.makeText(this, "Camera preview not ready", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        try {
+            // Get bitmap from TextureView
+            val bitmap = textureView.getBitmap()
+            if (bitmap != null) {
+                // Rotate bitmap if needed based on mRotationAngle
+                // TextureView.getBitmap() returns the un-rotated content usually, 
+                // but we want to save what the user sees (rotated).
+                val matrix = android.graphics.Matrix()
+                matrix.postRotate(mRotationAngle)
+                val rotatedBitmap = android.graphics.Bitmap.createBitmap(
+                    bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true
+                )
+                
+                val filename = "AIR_Photo_${SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())}.jpg"
+                
+                // Save to scoped storage (MediaStore)
+                val contentValues = ContentValues().apply {
+                    put(MediaStore.Images.Media.DISPLAY_NAME, filename)
+                    put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
+                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                        put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/AIR")
+                        put(MediaStore.Images.Media.IS_PENDING, 1)
+                    }
+                }
+                
+                val resolver = contentResolver
+                val uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, contentValues)
+                
+                if (uri != null) {
+                    resolver.openOutputStream(uri).use { out ->
+                        if (out != null) {
+                            rotatedBitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 100, out)
+                        }
+                    }
+                    
+                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                        contentValues.clear()
+                        contentValues.put(MediaStore.Images.Media.IS_PENDING, 0)
+                        resolver.update(uri, contentValues, null, null)
+                    }
+                    
+                    Toast.makeText(this, "Photo saved to Pictures/AIR", Toast.LENGTH_SHORT).show()
+                } else {
+                    Toast.makeText(this, "Failed to create MediaStore entry", Toast.LENGTH_SHORT).show()
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to take photo", e)
+            Toast.makeText(this, "Photo error: ${e.message}", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun startRecording() {
+        if (isRecording) {
+            Log.e(TAG, "Already recording, ignore start request")
+            return
+        }
+        if (mUVCCamera == null) {
+            Toast.makeText(this, "Camera not ready", Toast.LENGTH_SHORT).show()
+            return
+        }
+        
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            Toast.makeText(this, "Audio permission missing", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        try {
+            val filename = "AIR_Video_${SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())}.mp4"
+            
+            val dir = getExternalFilesDir(Environment.DIRECTORY_MOVIES)
+            if (dir != null && !dir.exists()) {
+                dir.mkdirs()
+            }
+            mCurrentVideoFile = File(dir, filename)
+            
+            mMediaRecorder = MediaRecorder()
+            mMediaRecorder?.setAudioSource(MediaRecorder.AudioSource.CAMCORDER)
+            mMediaRecorder?.setVideoSource(MediaRecorder.VideoSource.SURFACE)
+            mMediaRecorder?.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+            
+            // Adjust bitrate and encoding based on resolution
+            mMediaRecorder?.setVideoEncoder(MediaRecorder.VideoEncoder.H264)
+            mMediaRecorder?.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+            mMediaRecorder?.setVideoEncodingBitRate(2000000) // 2Mbps - Lowered to prevent bandwidth starvation
+            mMediaRecorder?.setVideoFrameRate(15) // 15fps - Explicitly set for stability
+            
+            // Handle rotation logic for video size
+            mMediaRecorder?.setVideoSize(mVideoWidth, mVideoHeight)
+            
+            // Orientation hint for playback
+            mMediaRecorder?.setOrientationHint(mRotationAngle.toInt())
+            
+            mMediaRecorder?.setOutputFile(mCurrentVideoFile!!.absolutePath)
+            
+            try {
+                mMediaRecorder?.prepare()
+            } catch (e: Exception) {
+                Log.e(TAG, "MediaRecorder prepare failed", e)
+                Toast.makeText(this, "Recorder init failed", Toast.LENGTH_SHORT).show()
+                releaseMediaRecorder()
+                return
+            }
+            
+            val surface = mMediaRecorder?.surface
+            if (surface != null) {
+                // Swap preview to MediaRecorder surface to avoid multi-surface crash
+                if (mUVCCamera != null) {
+                    try {
+                        // Stop current preview
+                        mUVCCamera!!.stopPreview()
+                        // Small delay to ensure preview stopped
+                        Thread.sleep(100)
+
+                        // Set preview to MediaRecorder surface
+                        val setPreviewDisplayMethod = mUVCCamera!!.javaClass.getMethod("setPreviewDisplay", android.view.Surface::class.java)
+                        setPreviewDisplayMethod.invoke(mUVCCamera, surface)
+                        Log.e(TAG, "Switched preview to MediaRecorder surface")
+
+                        // Start MediaRecorder
+                        mMediaRecorder?.start()
+                        isRecording = true
+                        
+                        runOnUiThread {
+                            Toast.makeText(this, "Recording Started...", Toast.LENGTH_SHORT).show()
+                        }
+                        Log.e(TAG, "MediaRecorder started successfully")
+
+                        // Start preview (now feeding recorder)
+                        mUVCCamera!!.startPreview()
+                        Log.e(TAG, "UVCCamera preview restarted on recorder surface")
+
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Failed to start recording with preview swap", e)
+                        Toast.makeText(this, "Recording failed", Toast.LENGTH_SHORT).show()
+                        
+                        // Try to restore preview to TextureView
+                        try {
+                             val textureView = findViewById<android.view.TextureView>(R.id.camera_texture_view)
+                             if (textureView != null) {
+                                 mUVCCamera!!.stopPreview()
+                                 val setPreviewTextureMethod = mUVCCamera!!.javaClass.getMethod("setPreviewTexture", android.graphics.SurfaceTexture::class.java)
+                                 setPreviewTextureMethod.invoke(mUVCCamera, textureView.surfaceTexture)
+                                 mUVCCamera!!.startPreview()
+                             }
+                        } catch (ignore: Exception) {}
+
+                        releaseMediaRecorder()
+                        return
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to setup recording", e)
+            Toast.makeText(this, "Setup failed: ${e.message}", Toast.LENGTH_LONG).show()
+            releaseMediaRecorder()
+        }
+    }
+
+    private fun stopRecording() {
+        if (!isRecording) return
+
+        try {
+             // Stop preview (which is feeding recorder)
+             try {
+                 if (mUVCCamera != null) {
+                     mUVCCamera!!.stopPreview()
+                 }
+             } catch (e: Exception) {
+                 Log.e(TAG, "Failed to stop preview feeding recorder", e)
+             }
+            
+            try {
+                mMediaRecorder?.stop()
+            } catch (e: RuntimeException) {
+                Log.e(TAG, "MediaRecorder stop failed (too short?)", e)
+            }
+            
+            try {
+                mMediaRecorder?.reset()
+            } catch (e: Exception) {
+                Log.e(TAG, "MediaRecorder reset failed", e)
+            }
+            
+            // Restore preview to TextureView
+            try {
+                val textureView = findViewById<android.view.TextureView>(R.id.camera_texture_view)
+                if (textureView != null && mUVCCamera != null) {
+                     val setPreviewTextureMethod = mUVCCamera!!.javaClass.getMethod("setPreviewTexture", android.graphics.SurfaceTexture::class.java)
+                     setPreviewTextureMethod.invoke(mUVCCamera, textureView.surfaceTexture)
+                     mUVCCamera!!.startPreview()
+                     Log.e(TAG, "Restored preview to TextureView")
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to restore preview", e)
+            }
+
+            runOnUiThread {
+                Toast.makeText(this, "Video saved to Movies/AIR", Toast.LENGTH_SHORT).show()
+            }
+            
+            // Save to Gallery
+            if (mCurrentVideoFile != null && mCurrentVideoFile!!.exists()) {
+                saveVideoToGallery(mCurrentVideoFile!!)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to stop recording", e)
+            Toast.makeText(this, "Stop error: ${e.message}", Toast.LENGTH_SHORT).show()
+        } finally {
+            releaseMediaRecorder()
+            isRecording = false
+            mCurrentVideoFile = null
+        }
+    }
+
+    private fun saveVideoToGallery(videoFile: File) {
+        try {
+            val values = ContentValues().apply {
+                put(MediaStore.Video.Media.DISPLAY_NAME, videoFile.name)
+                put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                    put(MediaStore.Video.Media.RELATIVE_PATH, Environment.DIRECTORY_MOVIES + "/AIR")
+                    put(MediaStore.Video.Media.IS_PENDING, 1)
+                }
+            }
+
+            val resolver = contentResolver
+            val uri = resolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)
+
+            if (uri != null) {
+                val outputStream = resolver.openOutputStream(uri)
+                if (outputStream != null) {
+                     outputStream.use { output ->
+                        videoFile.inputStream().use { input ->
+                            input.copyTo(output)
+                        }
+                    }
+
+                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                        values.clear()
+                        values.put(MediaStore.Video.Media.IS_PENDING, 0)
+                        resolver.update(uri, values, null, null)
+                    }
+                    
+                    runOnUiThread {
+                        Toast.makeText(this, "Video saved to Gallery", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to save video to gallery", e)
+        }
+    }
+
+    private fun releaseMediaRecorder() {
+        mMediaRecorder?.release()
+        mMediaRecorder = null
     }
 
     private fun allPermissionsGranted() = REQUIRED_PERMISSIONS.all {
@@ -276,6 +595,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun release64BitCamera() {
+        if (isRecording) {
+            stopRecording()
+        }
         try {
             mUVCCamera?.stopPreview()
             mUVCCamera?.destroy()
@@ -370,7 +692,12 @@ class MainActivity : AppCompatActivity() {
                     }
                     
                     // Open camera using reflection (because open(UsbControlBlock) is not accessible with Any?)
-                    val openMethod = UVCCamera::class.java.getDeclaredMethod("open", ctrlBlockClass)
+                        val methods = UVCCamera::class.java.declaredMethods
+                        for (m in methods) {
+                            Log.e(TAG, "UVCCamera Method: ${m.name} params: ${m.parameterTypes.joinToString()}")
+                        }
+
+                        val openMethod = UVCCamera::class.java.getDeclaredMethod("open", ctrlBlockClass)
                     openMethod.invoke(mUVCCamera, ctrlBlock)
                     
                 } catch (e: Exception) {
@@ -394,16 +721,15 @@ class MainActivity : AppCompatActivity() {
             }
             
             // Try higher resolutions first for better quality
-            // Note: FRAME_FORMAT_MJPEG is preferred for higher resolutions (bandwidth)
-            // But we try YUYV too if MJPEG is not supported
-            val resolutions = listOf(
-                Triple(1920, 1080, UVCCamera.FRAME_FORMAT_MJPEG),
-                Triple(1920, 1080, UVCCamera.FRAME_FORMAT_YUYV),
-                Triple(1280, 720, UVCCamera.FRAME_FORMAT_MJPEG),
-                Triple(1280, 720, UVCCamera.FRAME_FORMAT_YUYV),
-                Triple(640, 480, UVCCamera.FRAME_FORMAT_MJPEG),
-                Triple(640, 480, UVCCamera.FRAME_FORMAT_YUYV)
-            )
+                // Note: Prioritize 1280x720 YUYV for better color accuracy, fallback to MJPEG
+                val resolutions = listOf(
+                    Triple(1280, 720, UVCCamera.FRAME_FORMAT_YUYV),
+                    Triple(1280, 720, UVCCamera.FRAME_FORMAT_MJPEG),
+                    Triple(640, 480, UVCCamera.FRAME_FORMAT_YUYV),
+                    Triple(640, 480, UVCCamera.FRAME_FORMAT_MJPEG),
+                    Triple(1920, 1080, UVCCamera.FRAME_FORMAT_YUYV),
+                    Triple(1920, 1080, UVCCamera.FRAME_FORMAT_MJPEG)
+                )
 
             var success = false
             for ((width, height, format) in resolutions) {

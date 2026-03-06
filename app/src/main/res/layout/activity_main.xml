@@ -12,25 +12,37 @@
         android:layout_centerInParent="true" />
         
     <LinearLayout
-        android:layout_width="wrap_content"
+        android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_alignParentBottom="true"
-        android:layout_centerHorizontal="true"
         android:layout_marginBottom="32dp"
-        android:orientation="horizontal">
+        android:orientation="horizontal"
+        android:paddingStart="16dp"
+        android:paddingEnd="16dp"
+        android:weightSum="3">
 
         <Button
             android:id="@+id/retry_button"
-            android:layout_width="wrap_content"
+            android:layout_width="0dp"
             android:layout_height="wrap_content"
-            android:layout_marginEnd="16dp"
-            android:text="Retry / Check USB" />
+            android:layout_weight="1"
+            android:layout_marginEnd="8dp"
+            android:text="Retry" />
 
         <Button
             android:id="@+id/rotate_button"
-            android:layout_width="wrap_content"
+            android:layout_width="0dp"
             android:layout_height="wrap_content"
-            android:text="Rotate 90°" />
+            android:layout_weight="1"
+            android:layout_marginEnd="8dp"
+            android:text="Rotate" />
+
+        <Button
+            android:id="@+id/capture_button"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="PS" />
     </LinearLayout>
 
 </RelativeLayout>
