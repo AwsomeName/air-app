@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 14 is USB Video Class (UVC) -->
+    <usb-device class="14" />
+    
+    <!-- 239 is Miscellaneous (often used for UVC cameras) -->
+    <usb-device class="239" subclass="2" />
+    
+    <!-- Specific match for your current camera (XC-TECH USB Camera) -->
+    <usb-device vendor-id="22595" product-id="30852" />
+</resources>

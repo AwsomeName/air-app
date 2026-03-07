@@ -35,10 +35,94 @@ import android.view.MotionEvent
 class MainActivity : AppCompatActivity() {
     private val TAG = "USB_CAMERA_DEBUG"
     private val ACTION_USB_PERMISSION = "com.example.air.USB_PERMISSION"
+    private var mCurrentDeviceName: String? = null
+
+    // Auto-retry configuration
+    private var mRetryButton: android.widget.Button? = null
+    private var retryCount = 0
+    private val MAX_RETRIES = 3
+    private val autoRetryHandler = Handler(Looper.getMainLooper())
+    private val autoRetryRunnable = object : Runnable {
+        override fun run() {
+            val usbManager = getSystemService(android.content.Context.USB_SERVICE) as android.hardware.usb.UsbManager
+            val deviceList = usbManager.deviceList
+
+            if (mUVCCamera != null && mCurrentDeviceName != null) {
+                val stillConnected = deviceList.values.any { it.deviceName == mCurrentDeviceName }
+                if (!stillConnected) {
+                    Log.e(TAG, "Device $mCurrentDeviceName no longer found. Releasing...")
+                    release64BitCamera()
+                }
+            }
+
+            Log.e(TAG, "Auto-retry check: mUVCCamera=${if (mUVCCamera != null) "Connected" else "Disconnected"}")
+            if (mUVCCamera != null) {
+                // Connected
+                if (retryCount != 0) retryCount = 0
+                if (mRetryButton?.visibility == android.view.View.VISIBLE) {
+                    mRetryButton?.visibility = android.view.View.INVISIBLE
+                }
+            } else {
+                // Disconnected
+                if (retryCount < MAX_RETRIES) {
+                    Log.e(TAG, "Auto-retry attempt: ${retryCount + 1}")
+                    checkAndConnectCamera(false)
+                    retryCount++
+                } else {
+                    // Max retries reached
+                    if (mRetryButton?.visibility != android.view.View.VISIBLE) {
+                        mRetryButton?.visibility = android.view.View.VISIBLE
+                        Toast.makeText(this@MainActivity, "Connection failed. Please retry manually.", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            }
+            autoRetryHandler.postDelayed(this, 10000)
+        }
+    }
+
+    private fun checkAndConnectCamera(isManual: Boolean) {
+        val textureView = findViewById<android.view.TextureView>(R.id.camera_texture_view)
+        if (textureView == null) {
+            if (isManual) Toast.makeText(this, "View not ready", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        val usbManager = getSystemService(android.content.Context.USB_SERVICE) as android.hardware.usb.UsbManager
+        val deviceList = usbManager.deviceList
+        
+        if (deviceList.values.isNotEmpty()) {
+            val device = deviceList.values.first()
+            open64BitCamera(device, textureView)
+        } else {
+            if (isManual) Toast.makeText(this, "No Device Found", Toast.LENGTH_SHORT).show()
+        }
+    }
     
     private val usbReceiver = object : android.content.BroadcastReceiver() {
         override fun onReceive(context: android.content.Context, intent: android.content.Intent) {
-            if (ACTION_USB_PERMISSION == intent.action) {
+            val action = intent.action
+            if (android.hardware.usb.UsbManager.ACTION_USB_DEVICE_DETACHED == action) {
+                val device: UsbDevice? = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                    intent.getParcelableExtra(android.hardware.usb.UsbManager.EXTRA_DEVICE, UsbDevice::class.java)
+                } else {
+                    @Suppress("DEPRECATION")
+                    intent.getParcelableExtra(android.hardware.usb.UsbManager.EXTRA_DEVICE)
+                }
+                Log.e(TAG, "USB Device Detached: ${device?.deviceName}")
+                if (device?.deviceName == mCurrentDeviceName) {
+                    release64BitCamera()
+                }
+            } else if (android.hardware.usb.UsbManager.ACTION_USB_DEVICE_ATTACHED == action) {
+                val device: UsbDevice? = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                    intent.getParcelableExtra(android.hardware.usb.UsbManager.EXTRA_DEVICE, UsbDevice::class.java)
+                } else {
+                    @Suppress("DEPRECATION")
+                    intent.getParcelableExtra(android.hardware.usb.UsbManager.EXTRA_DEVICE)
+                }
+                Log.e(TAG, "USB Device Attached: ${device?.deviceName}")
+                // Try to connect immediately
+                checkAndConnectCamera(false)
+            } else if (ACTION_USB_PERMISSION == action) {
                 synchronized(this) {
                     val device: UsbDevice? = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
                         intent.getParcelableExtra(android.hardware.usb.UsbManager.EXTRA_DEVICE, UsbDevice::class.java)
@@ -118,6 +202,7 @@ class MainActivity : AppCompatActivity() {
     override fun onPause() {
         super.onPause()
         Log.e(TAG, "onPause called")
+        autoRetryHandler.removeCallbacks(autoRetryRunnable)
     }
 
     override fun onStop() {
@@ -145,6 +230,9 @@ class MainActivity : AppCompatActivity() {
         super.onResume()
         Log.e(TAG, "onResume called")
         
+        // Start auto-retry loop
+        autoRetryHandler.post(autoRetryRunnable)
+
         val textureView = findViewById<android.view.TextureView>(R.id.camera_texture_view)
         if (textureView.visibility != android.view.View.VISIBLE) {
             textureView.visibility = android.view.View.VISIBLE
@@ -159,6 +247,8 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         
         val filter = android.content.IntentFilter(ACTION_USB_PERMISSION)
+        filter.addAction(android.hardware.usb.UsbManager.ACTION_USB_DEVICE_DETACHED)
+        filter.addAction(android.hardware.usb.UsbManager.ACTION_USB_DEVICE_ATTACHED)
         registerReceiver(usbReceiver, filter, android.content.Context.RECEIVER_EXPORTED)
         
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -205,28 +295,12 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        val retryButton = findViewById<android.widget.Button>(R.id.retry_button)
-        retryButton.setOnClickListener {
+        mRetryButton = findViewById<android.widget.Button>(R.id.retry_button)
+        mRetryButton?.setOnClickListener {
             Log.e(TAG, "Retry clicked")
-            val usbManager = getSystemService(android.content.Context.USB_SERVICE) as android.hardware.usb.UsbManager
-            val deviceList = usbManager.deviceList
-            deviceList.values.forEach { device ->
-                if (!usbManager.hasPermission(device)) {
-                    Log.e(TAG, "No permission for ${device.deviceName}")
-                }
-            }
-            
-            if (textureView != null) {
-                if (deviceList.values.isNotEmpty()) {
-                    val device = deviceList.values.first()
-                    open64BitCamera(device, textureView)
-                } else {
-                    Toast.makeText(this@MainActivity, "No Device Found", Toast.LENGTH_SHORT).show()
-                }
-            } else {
-                 Log.e(TAG, "TextureView not found")
-                 Toast.makeText(this@MainActivity, "View not ready", Toast.LENGTH_SHORT).show()
-             }
+            retryCount = 0
+            mRetryButton?.visibility = android.view.View.INVISIBLE
+            checkAndConnectCamera(true)
         }
 
         val rotateButton = findViewById<android.widget.Button>(R.id.rotate_button)
@@ -250,7 +324,12 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun setupCaptureButton() {
-        val captureButton = findViewById<android.widget.Button>(R.id.capture_button) ?: return
+        val captureButton = findViewById<android.widget.Button>(R.id.capture_button)
+        if (captureButton == null) {
+            Log.e(TAG, "setupCaptureButton: Button not found!")
+            return
+        }
+        Log.e(TAG, "setupCaptureButton: Button found, setting listener")
         
         recordingRunnable = Runnable {
             if (!isRecording) {
@@ -259,6 +338,7 @@ class MainActivity : AppCompatActivity() {
         }
         
         captureButton.setOnTouchListener { v, event ->
+            Log.e(TAG, "Touch event: ${event.action} at ${event.x}, ${event.y}")
             when (event.action) {
                 MotionEvent.ACTION_DOWN -> {
                     // Start timer for long press (recording)
@@ -630,6 +710,7 @@ class MainActivity : AppCompatActivity() {
             mUVCCamera?.stopPreview()
             mUVCCamera?.destroy()
             mUVCCamera = null
+            mCurrentDeviceName = null
         } catch (e: Exception) {
             Log.e(TAG, "release64BitCamera failed", e)
         }
@@ -638,6 +719,7 @@ class MainActivity : AppCompatActivity() {
     private fun open64BitCamera(device: UsbDevice, textureView: android.view.TextureView) {
         try {
             Log.e(TAG, "Attempting open64BitCamera for ${device.deviceName}")
+            mCurrentDeviceName = device.deviceName
             
             val usbManager = getSystemService(android.content.Context.USB_SERVICE) as android.hardware.usb.UsbManager
             val usbManagerClass = Class.forName("android.hardware.usb.UsbManager")
